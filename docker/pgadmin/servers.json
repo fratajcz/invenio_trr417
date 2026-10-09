@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "trr417-inventory-db",
+      "Group": "Servers",
+      "Host": "trr417-inventory-db-1",
+      "Port": 5432,
+      "MaintenanceDB": "postgres",
+      "Username": "trr417-inventory",
+      "SSLMode": "prefer"
+    }
+  }
+}

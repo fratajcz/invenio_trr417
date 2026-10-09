@@ -1,0 +1,152 @@
+services:
+  app:
+    build:
+      context: ./
+      args:
+        - ENVIRONMENT=DEV
+    image: trr417-inventory
+    restart: "unless-stopped"
+    environment:
+      - "INVENIO_ACCOUNTS_SESSION_REDIS_URL=redis://cache:6379/1"
+      - "INVENIO_BROKER_URL=amqp://guest:guest@mq:5672/"
+      - "INVENIO_CACHE_REDIS_URL=redis://cache:6379/0"
+      - "INVENIO_CACHE_TYPE=RedisCache"
+      - "INVENIO_CELERY_BROKER_URL=amqp://guest:guest@mq:5672/"
+      - "INVENIO_CELERY_RESULT_BACKEND=redis://cache:6379/2"
+      - "INVENIO_COMMUNITIES_IDENTITIES_CACHE_REDIS_URL=redis://cache:6379/4"
+      - "INVENIO_SEARCH_HOSTS=['search:9200']"
+      - "INVENIO_SECRET_KEY=CHANGE_ME"
+      - "INVENIO_SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://trr417-inventory:trr417-inventory@db/trr417-inventory"
+      - "INVENIO_PROXYFIX_CONFIG={'x_for': 1, 'x_proto': 1}"
+      - "INVENIO_RATELIMIT_STORAGE_URL=redis://cache:6379/3"
+      # If you are deploying your site on a non-local host
+      # make sure to change those values accordingly.
+      - "INVENIO_SITE_UI_URL=https://127.0.0.1"
+      - "INVENIO_SITE_API_URL=https://127.0.0.1/api"
+  frontend:
+    build: ./docker/nginx/
+    image: trr417-inventory-frontend
+    restart: "unless-stopped"
+    ports:
+      - "${DOCKER_WEB_IP_BIND:-0.0.0.0}:80:80"
+      - "${DOCKER_WEB_IP_BIND:-0.0.0.0}:443:443"
+  cache:
+    image: redis:7
+    restart: "unless-stopped"
+    read_only: true
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:6379:6379"
+  db:
+    image: postgres:17.10
+    restart: "unless-stopped"
+    environment:
+      - "POSTGRES_USER=trr417-inventory"
+      - "POSTGRES_PASSWORD=trr417-inventory"
+      - "POSTGRES_DB=trr417-inventory"
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+  pgadmin:
+    image: dpage/pgadmin4:6
+    restart: "unless-stopped"
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "florin.ratajczak@uk-erlangen.de"
+      PGADMIN_DEFAULT_PASSWORD: "trr417-inventory"
+    volumes:
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json
+  # note: RabbitMQ uses the hostname to build the Mnesia data directory path (cf. https://www.rabbitmq.com/docs/configure)
+  #       using a randomly generated hostname "forgets" about old queued messages (e.g. celery tasks) with new builds,
+  #       and hard-coding the Mnesia path with random hostnames leads to connection issues on startup for old names
+  mq:
+    image: rabbitmq:3-management
+    restart: "unless-stopped"
+    hostname: mq
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:15672:15672"
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:5672:5672"
+    volumes:
+      - mq_data:/var/lib/rabbitmq
+  flower:
+    image: mher/flower:2.0.1
+    restart: "unless-stopped"
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:5555:5555"
+    command: celery --broker=amqp://guest:guest@mq:5672/ flower
+    depends_on:
+      mq:
+        condition: service_started
+  search:
+    image: opensearchproject/opensearch:2.19.5
+    restart: "unless-stopped"
+    environment:
+      # Settings only for development. DO NOT use in production!
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      # Change the initial admin password according to the OpenSearch documentation:
+      # https://docs.opensearch.org/latest/security/configuration/demo-configuration/#setting-up-a-custom-admin-password
+      - "OPENSEARCH_INITIAL_ADMIN_PASSWORD=CHANGE_me_0!"
+      - "DISABLE_INSTALL_DEMO_CONFIG=true"
+      - "DISABLE_SECURITY_PLUGIN=true"
+      - "discovery.type=single-node"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: 2g
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:9200:9200"
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:9600:9600"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    volumes:
+      - search_data:/usr/share/opensearch/data
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.19.5
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:5601:5601"
+    expose:
+      - "5601"
+    environment:
+      # settings only for development. DO NOT use in production!
+      - 'OPENSEARCH_HOSTS=["http://search:9200"]'
+      - "DISABLE_SECURITY_DASHBOARDS_PLUGIN=true"
+  s3:
+    image: rustfs/rustfs:1.0.0
+    restart: "unless-stopped"
+    environment:
+      RUSTFS_ACCESS_KEY: CHANGE_ME
+      RUSTFS_SECRET_KEY: CHANGE_ME
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
+      RUSTFS_VOLUMES: "/data"
+    ports:
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:9000:9000"
+      - "${DOCKER_SERVICES_IP_BIND:-127.0.0.1}:9001:9001"
+    volumes:
+      - s3_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  db_data:
+  mq_data:
+  search_data:
+  s3_data:
